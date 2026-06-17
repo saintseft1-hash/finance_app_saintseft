@@ -50,6 +50,14 @@ const ASSETS = {
 const LOW = { cash: 15, bond: 55, gold: 10, th: 8, intl: 12 };
 const HIGH = { cash: 0, bond: 5, gold: 10, th: 35, intl: 50 };
 
+// สินทรัพย์ที่ดึงราคาเรียลไทม์ (ใช้ ETF ที่ซื้อขายในสหรัฐเป็นตัวแทนแต่ละสินทรัพย์)
+const MARKET_ASSETS = [
+  { sym: "SPY", label: "หุ้นโลก / สหรัฐ", note: "S&P 500 ETF — ตัวแทนหุ้นต่างประเทศ" },
+  { sym: "THD", label: "หุ้นไทย", note: "MSCI Thailand ETF — ตัวแทนตลาดหุ้นไทย" },
+  { sym: "GLD", label: "ทองคำ", note: "Gold ETF — ตัวแทนราคาทองคำ" },
+  { sym: "BND", label: "ตราสารหนี้", note: "Total Bond ETF — ตัวแทนตราสารหนี้" },
+];
+
 /* ----------------------------- ตัวช่วย ----------------------------- */
 
 const fmt = (n) => "฿" + Math.round(n || 0).toLocaleString("th-TH");
@@ -136,7 +144,7 @@ function Bar({ pct, color }) {
 export default function App() {
   const [tab, setTab] = useState("overview");
   const [settings, setSettings] = useState(() =>
-    load("finance:settings", { monthlyIncome: 18000, riskTolerance: 20, investOverride: null })
+    load("finance:settings", { monthlyIncome: 18000, riskTolerance: 20, investOverride: null, finnhubKey: "" })
   );
   const [txns, setTxns] = useState(() => load("finance:txns", []));
   const [viewMonth, setViewMonth] = useState(monthKey(todayStr()));
@@ -219,6 +227,7 @@ export default function App() {
           ["txns", "รายการ"],
           ["budget", "งบประมาณ"],
           ["invest", "การลงทุน"],
+          ["markets", "ตลาด"],
         ].map(([id, label]) => (
           <button key={id} className={"tab" + (tab === id ? " active" : "")} onClick={() => setTab(id)}>
             {label}
@@ -241,6 +250,7 @@ export default function App() {
             investMonthly, projYears, setProjYears, projection, finalVal, passiveMonthly,
             avgExpense, emergencyTarget }} />
         )}
+        {tab === "markets" && <Markets {...{ settings, setSettings }} />}
       </main>
 
       <footer className="ftr">
@@ -563,6 +573,123 @@ function Invest({ settings, setSettings, w, expRet, portRisk, recommendedInvest,
   );
 }
 
+/* ----------------------------- แท็บ: ตลาด (เรียลไทม์) ----------------------------- */
+
+function Markets({ settings, setSettings }) {
+  const key = settings.finnhubKey || "";
+  const [keyInput, setKeyInput] = useState(key);
+  const [quotes, setQuotes] = useState({});
+  const [status, setStatus] = useState("idle");
+  const [updatedAt, setUpdatedAt] = useState(null);
+
+  const loadAll = async () => {
+    if (!key) return;
+    setStatus("loading");
+    try {
+      const out = {};
+      for (const a of MARKET_ASSETS) {
+        const r = await fetch(`https://finnhub.io/api/v1/quote?symbol=${a.sym}&token=${key}`);
+        if (!r.ok) throw new Error("http");
+        out[a.sym] = await r.json();
+      }
+      const valid = Object.values(out).some((q) => typeof q.c === "number" && q.c > 0);
+      if (!valid) throw new Error("empty");
+      setQuotes(out);
+      setUpdatedAt(new Date());
+      setStatus("done");
+    } catch (e) {
+      setStatus("error");
+    }
+  };
+
+  useEffect(() => {
+    if (key) loadAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+
+  if (!key) {
+    return (
+      <div className="card">
+        <div className="card-title">เชื่อมต่อข้อมูลตลาดเรียลไทม์</div>
+        <p className="md-intro">
+          ดูราคาตลาดแบบเรียลไทม์ของสินทรัพย์ในพอร์ตของคุณ ใช้ได้ฟรีผ่าน Finnhub
+          เพียงสมัครรับคีย์ฟรี ใช้เวลาประมาณ 1 นาที
+        </p>
+        <ol className="md-steps">
+          <li>เปิดเว็บ <b>finnhub.io</b> แล้วกด Get free API key สมัครด้วยอีเมล</li>
+          <li>คัดลอก API key ที่ได้</li>
+          <li>วางในช่องด้านล่าง แล้วกดบันทึก</li>
+        </ol>
+        <div className="md-key-row">
+          <input type="text" placeholder="วาง API key ที่นี่" value={keyInput} onChange={(e) => setKeyInput(e.target.value)} />
+          <button className="btn-primary" onClick={() => setSettings({ ...settings, finnhubKey: keyInput.trim() })}>บันทึก</button>
+        </div>
+        <div className="muted-note">คีย์ถูกเก็บไว้ในเบราว์เซอร์ของคุณเท่านั้น ไม่ส่งไปที่อื่น</div>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="card">
+        <div className="md-head">
+          <div className="card-title" style={{ margin: 0 }}>ตลาดวันนี้</div>
+          <button className="md-refresh" onClick={loadAll} disabled={status === "loading"}>
+            {status === "loading" ? "กำลังโหลด…" : "รีเฟรช"}
+          </button>
+        </div>
+        {status === "error" && (
+          <div className="md-error">โหลดข้อมูลไม่ได้ — ตรวจสอบ API key หรือลองรีเฟรชอีกครั้ง</div>
+        )}
+        {MARKET_ASSETS.map((a) => {
+          const q = quotes[a.sym] || {};
+          const dp = q.dp;
+          const up = dp >= 0;
+          return (
+            <div className="md-row" key={a.sym}>
+              <div className="md-asset">
+                <span className="md-label">{a.label}</span>
+                <span className="md-note">{a.note}</span>
+              </div>
+              <div className="md-nums">
+                {typeof dp !== "number" ? (
+                  <span className="md-na">—</span>
+                ) : (
+                  <>
+                    <span className="md-price">${Number(q.c).toFixed(2)}</span>
+                    <span className="md-chg" style={{ color: up ? PALETTE.income : PALETTE.expense }}>
+                      {up ? "▲" : "▼"} {Math.abs(dp).toFixed(2)}%
+                    </span>
+                  </>
+                )}
+              </div>
+            </div>
+          );
+        })}
+        {updatedAt && (
+          <div className="md-foot">
+            <span className="muted-note">อัปเดตล่าสุด {updatedAt.toLocaleTimeString("th-TH")}</span>
+            <button className="md-changekey" onClick={() => setSettings({ ...settings, finnhubKey: "" })}>เปลี่ยน API key</button>
+          </div>
+        )}
+      </div>
+
+      <div className="card md-guide">
+        <div className="card-title">อ่านอย่างไรไม่ให้หลงทาง</div>
+        <p>
+          ตัวเลขสีเขียว/แดงคือการเคลื่อนไหว <b>รายวัน</b> เอาไว้ดูภาพรวมเฉย ๆ <b>ไม่ใช่สัญญาณให้ซื้อหรือขาย</b>
+          สำหรับมนุษย์เงินเดือน สิ่งที่สร้างความมั่งคั่งจริงคือการลงทุนสม่ำเสมอทุกเดือน (DCA)
+          ไม่ว่าวันนั้นตลาดจะแดงหรือเขียว
+        </p>
+        <p className="muted-note">
+          “เวลาอยู่ในตลาด” สำคัญกว่า “การจับจังหวะตลาด” — การพยายามเดาว่าวันไหนตัวไหนจะขึ้น
+          คือสิ่งที่แม้แต่มืออาชีพยังพลาดบ่อย และมักทำให้ผลตอบแทนระยะยาวแย่ลง
+        </p>
+      </div>
+    </>
+  );
+}
+
 /* ----------------------------- CSS ----------------------------- */
 
 const CSS = `
@@ -679,6 +806,31 @@ const CSS = `
 .passive{margin-top:14px;font-size:13px;background:#F3EEE2;color:#6b5a2d;padding:10px 12px;border-radius:9px}
 
 .warn-card{background:#FBF1EE;border-color:#E8CFC7;font-size:13px;color:#7a3f31}
+
+.md-intro{font-size:13.5px;margin:0 0 12px}
+.md-steps{margin:0 0 14px;padding-left:20px;font-size:13.5px}
+.md-steps li{margin-bottom:6px}
+.md-key-row{display:flex;gap:8px}
+.md-key-row input{flex:1;padding:10px;border:1px solid var(--hair);border-radius:9px;font-size:14px;background:#fff;color:var(--ink)}
+.md-key-row .btn-primary{width:auto;margin:0;padding:10px 18px}
+.md-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+.md-refresh{border:1px solid var(--hair);background:var(--paper);padding:6px 14px;border-radius:8px;font-size:13px;font-weight:500;color:var(--brand);cursor:pointer}
+.md-refresh:disabled{opacity:.5;cursor:default}
+.md-error{background:#FBF1EE;color:#7a3f31;font-size:13px;padding:9px 12px;border-radius:8px;margin-bottom:10px}
+.md-row{display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid var(--hair)}
+.md-row:last-of-type{border-bottom:none}
+.md-asset{display:flex;flex-direction:column;gap:2px}
+.md-label{font-weight:600;font-size:14.5px}
+.md-note{font-size:11.5px;color:var(--muted)}
+.md-nums{display:flex;flex-direction:column;align-items:flex-end;gap:2px}
+.md-price{font-family:'Noto Serif Thai',serif;font-weight:600;font-variant-numeric:tabular-nums;font-size:16px}
+.md-chg{font-size:13px;font-weight:600;font-variant-numeric:tabular-nums}
+.md-na{color:var(--muted);font-size:18px}
+.md-foot{display:flex;justify-content:space-between;align-items:center;margin-top:10px}
+.md-foot .muted-note{margin:0}
+.md-changekey{border:none;background:none;color:var(--brand);font-size:12px;cursor:pointer;text-decoration:underline;padding:0}
+.md-guide p{font-size:13.5px;margin:0 0 10px;line-height:1.6}
+.md-guide p:last-child{margin-bottom:0}
 
 .ftr{margin-top:22px;padding-top:14px;border-top:1px solid var(--hair);font-size:11.5px;color:var(--muted);line-height:1.5;text-align:center}
 `;
