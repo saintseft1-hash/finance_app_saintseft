@@ -26,7 +26,7 @@ async function api(path, { method = "GET", token, body } = {}) {
 
 /* ----------------------------- ค่าคงที่/ตั้งค่า ----------------------------- */
 
-const PALETTE = {
+const LIGHT = {
   paper: "#F4F2EC",
   card: "#FCFBF7",
   ink: "#15201C",
@@ -37,6 +37,21 @@ const PALETTE = {
   muted: "#6B6F68",
   hair: "#DAD6CA",
 };
+
+const DARK = {
+  paper: "#12140F",
+  card: "#1C1F19",
+  ink: "#E8EBE3",
+  brand: "#3FA06F",
+  brass: "#CCA052",
+  income: "#5FC98C",
+  expense: "#E58A6F",
+  muted: "#9BA298",
+  hair: "#2E322B",
+};
+
+// PALETTE จะถูกอัปเดตค่าตามธีมที่เลือก (ใช้กับ inline style และกราฟ)
+const PALETTE = { ...LIGHT };
 
 const INCOME_CATS = [
   { id: "salary", label: "เงินเดือน" },
@@ -163,6 +178,21 @@ function Bar({ pct, color }) {
 /* ----------------------------- แอปหลัก ----------------------------- */
 
 export default function App() {
+  const [theme, setTheme] = useState(() => {
+    try { return localStorage.getItem("finance:theme") === "dark" ? "dark" : "light"; }
+    catch (e) { return "light"; }
+  });
+
+  // อัปเดตชุดสีที่ใช้กับ inline style / กราฟ ให้ตรงกับธีม
+  Object.assign(PALETTE, theme === "dark" ? DARK : LIGHT);
+
+  useEffect(() => {
+    try { localStorage.setItem("finance:theme", theme); } catch (e) {}
+    try { document.body.style.background = (theme === "dark" ? DARK : LIGHT).paper; } catch (e) {}
+  }, [theme]);
+
+  const toggleTheme = () => setTheme((t) => (t === "dark" ? "light" : "dark"));
+
   const [auth, setAuth] = useState(() => {
     try {
       const token = localStorage.getItem("finance:token");
@@ -188,13 +218,13 @@ export default function App() {
     setAuth(null);
   };
 
-  if (!auth) return <AuthScreen onLogin={login} />;
-  return <FinanceApp token={auth.token} email={auth.email} onLogout={logout} />;
+  if (!auth) return <AuthScreen onLogin={login} theme={theme} onToggleTheme={toggleTheme} />;
+  return <FinanceApp token={auth.token} email={auth.email} onLogout={logout} theme={theme} onToggleTheme={toggleTheme} />;
 }
 
 /* ----------------------------- หน้าเข้าสู่ระบบ ----------------------------- */
 
-function AuthScreen({ onLogin }) {
+function AuthScreen({ onLogin, theme, onToggleTheme }) {
   const [mode, setMode] = useState("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -220,8 +250,11 @@ function AuthScreen({ onLogin }) {
   };
 
   return (
-    <div className="root auth-root">
+    <div className={"root auth-root" + (theme === "dark" ? " dark" : "")}>
       <style>{CSS}</style>
+      <button className="theme-btn theme-btn-float" onClick={onToggleTheme}>
+        {theme === "dark" ? "โหมดสว่าง" : "โหมดมืด"}
+      </button>
       <div className="auth-card">
         <div className="brand-mark">เงินงอกเงย</div>
         <div className="brand-sub">บัญชีส่วนตัว · ออม · ลงทุน</div>
@@ -249,7 +282,7 @@ function AuthScreen({ onLogin }) {
 
 /* ----------------------------- แอปหลัก ----------------------------- */
 
-function FinanceApp({ token, email, onLogout }) {
+function FinanceApp({ token, email, onLogout, theme, onToggleTheme }) {
   const [tab, setTab] = useState("overview");
   const [loaded, setLoaded] = useState(false);
   const [saveState, setSaveState] = useState("saved");
@@ -381,7 +414,7 @@ function FinanceApp({ token, email, onLogout }) {
 
   if (!loaded) {
     return (
-      <div className="root">
+      <div className={"root" + (theme === "dark" ? " dark" : "")}>
         <style>{CSS}</style>
         <div className="loading-screen">กำลังโหลดข้อมูลของคุณ…</div>
       </div>
@@ -389,7 +422,7 @@ function FinanceApp({ token, email, onLogout }) {
   }
 
   return (
-    <div className="root">
+    <div className={"root" + (theme === "dark" ? " dark" : "")}>
       <style>{CSS}</style>
 
       <div className="userbar">
@@ -398,6 +431,7 @@ function FinanceApp({ token, email, onLogout }) {
           <span className={"savedot " + saveState}>
             {saveState === "saving" ? "กำลังบันทึก…" : saveState === "error" ? "บันทึกไม่สำเร็จ" : "บันทึกแล้ว"}
           </span>
+          <button className="theme-btn" onClick={onToggleTheme}>{theme === "dark" ? "โหมดสว่าง" : "โหมดมืด"}</button>
           <button className="logout-btn" onClick={onLogout}>ออกจากระบบ</button>
         </span>
       </div>
@@ -1200,4 +1234,31 @@ const CSS = `
 .bd-pct{color:var(--muted);font-weight:400;font-size:12px;margin-left:4px}
 
 .ftr{margin-top:22px;padding-top:14px;border-top:1px solid var(--hair);font-size:11.5px;color:var(--muted);line-height:1.5;text-align:center}
+
+.theme-btn{border:1px solid var(--hair);background:var(--card);color:var(--brand);font-size:12px;padding:5px 11px;border-radius:8px;cursor:pointer}
+.theme-btn:hover{background:var(--paper)}
+.theme-btn-float{position:fixed;top:16px;right:16px;z-index:5}
+
+/* ===================== DARK MODE ===================== */
+.root.dark{
+  --paper:#12140F;--card:#1C1F19;--ink:#E8EBE3;--brand:#3FA06F;
+  --brass:#CCA052;--income:#5FC98C;--expense:#E58A6F;--muted:#9BA298;--hair:#2E322B;
+}
+.root.dark .tabs{background:#23271F}
+.root.dark .bar-track{background:#2A2E26}
+.root.dark .hero-hint{background:#18271F}
+.root.dark input,.root.dark select{background:#14170F;color:var(--ink)}
+.root.dark input::placeholder{color:#6B726A}
+.root.dark .income-edit input{background:none}
+.root.dark .btn-primary{color:#10120F}
+.root.dark .rec-banner button{color:#10120F}
+.root.dark .type-toggle button.active.exp,.root.dark .type-toggle button.active.inc{color:#10120F}
+.root.dark .auth-err,.root.dark .md-error{background:#33201B;color:#E9A18E}
+.root.dark .warn-card{background:#2A1E1A;border-color:#4A332B;color:#E0A493}
+.root.dark .passive{background:#2A2618;color:#D8C28A}
+.root.dark .rec-banner{background:#18271F;border-color:#2E4537}
+.root.dark .rec-day{background:#2A2E26}
+.root.dark .txn-tag{background:#24322A;color:var(--income)}
+.root.dark .auth-card{box-shadow:0 4px 24px rgba(0,0,0,.4)}
+.root.dark .tab.active{box-shadow:0 1px 3px rgba(0,0,0,.35)}
 `;
