@@ -147,10 +147,12 @@ export default function App() {
     load("finance:settings", { monthlyIncome: 18000, riskTolerance: 20, investOverride: null, finnhubKey: "" })
   );
   const [txns, setTxns] = useState(() => load("finance:txns", []));
+  const [recurring, setRecurring] = useState(() => load("finance:recurring", []));
   const [viewMonth, setViewMonth] = useState(monthKey(todayStr()));
 
   useEffect(() => { save("finance:settings", settings); }, [settings]);
   useEffect(() => { save("finance:txns", txns); }, [txns]);
+  useEffect(() => { save("finance:recurring", recurring); }, [recurring]);
 
   const monthsWithData = useMemo(() => {
     const set = new Set(txns.map((t) => monthKey(t.date)));
@@ -204,6 +206,40 @@ export default function App() {
   const finalVal = projection[projection.length - 1];
   const passiveMonthly = (finalVal.value * 0.04) / 12;
 
+  // ---- รายการประจำ ----
+  const applyRecurring = (month) => {
+    setTxns((prev) => {
+      const additions = recurring
+        .filter((r) => !prev.some((t) => t.recurringId === r.id && monthKey(t.date) === month))
+        .map((r, i) => {
+          const [y, m] = month.split("-").map(Number);
+          const lastDay = new Date(y, m, 0).getDate();
+          const d = Math.min(Math.max(r.day || 1, 1), lastDay);
+          return {
+            id: Date.now() + i,
+            type: r.type,
+            amount: r.amount,
+            category: r.category,
+            date: `${month}-${String(d).padStart(2, "0")}`,
+            note: r.note || "",
+            recurringId: r.id,
+          };
+        });
+      return additions.length ? [...additions, ...prev] : prev;
+    });
+  };
+
+  const pendingRecurring = useMemo(
+    () => recurring.filter((r) => !txns.some((t) => t.recurringId === r.id && monthKey(t.date) === viewMonth)),
+    [recurring, txns, viewMonth]
+  );
+
+  // ลงอัตโนมัติสำหรับเดือนปัจจุบันเมื่อเปิดแอป (ถ้าเปิดใช้งาน)
+  useEffect(() => {
+    if (settings.autoRecurring && recurring.length) applyRecurring(monthKey(todayStr()));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings.autoRecurring, recurring]);
+
   return (
     <div className="root">
       <style>{CSS}</style>
@@ -240,7 +276,8 @@ export default function App() {
           <Overview {...{ viewMonth, setViewMonth, income, expense, net, savingsRate, avgExpense, emergencyTarget }} />
         )}
         {tab === "txns" && (
-          <Transactions {...{ txns, setTxns, viewMonth, setViewMonth, monthTxns }} />
+          <Transactions {...{ txns, setTxns, viewMonth, setViewMonth, monthTxns,
+            recurring, setRecurring, applyRecurring, pendingRecurring, settings, setSettings }} />
         )}
         {tab === "budget" && (
           <Budget {...{ settings, setSettings, monthTxns, income }} />
@@ -333,7 +370,7 @@ function MonthNav({ viewMonth, setViewMonth }) {
 
 /* ----------------------------- แท็บ: รายการ ----------------------------- */
 
-function Transactions({ txns, setTxns, viewMonth, setViewMonth, monthTxns }) {
+function Transactions({ txns, setTxns, viewMonth, setViewMonth, monthTxns, recurring, setRecurring, applyRecurring, pendingRecurring, settings, setSettings }) {
   const [type, setType] = useState("expense");
   const [amount, setAmount] = useState("");
   const [cat, setCat] = useState("food");
@@ -382,7 +419,16 @@ function Transactions({ txns, setTxns, viewMonth, setViewMonth, monthTxns }) {
         <button className="btn-primary" onClick={add}>+ เพิ่มรายการ</button>
       </div>
 
+      <RecurringManager {...{ recurring, setRecurring, settings, setSettings }} />
+
       <MonthNav viewMonth={viewMonth} setViewMonth={setViewMonth} />
+
+      {pendingRecurring.length > 0 && (
+        <div className="rec-banner">
+          <span>มีรายการประจำ {pendingRecurring.length} รายการที่ยังไม่ได้ลงใน{monthLabel(viewMonth)}</span>
+          <button onClick={() => applyRecurring(viewMonth)}>ลงทั้งหมด</button>
+        </div>
+      )}
 
       <div className="card list-card">
         {sorted.length === 0 && <div className="empty">ยังไม่มีรายการในเดือนนี้ เพิ่มรายการแรกด้านบนได้เลย</div>}
@@ -390,6 +436,7 @@ function Transactions({ txns, setTxns, viewMonth, setViewMonth, monthTxns }) {
           <div className="txn" key={t.id}>
             <div className="txn-main">
               <span className="txn-cat">{catLabel(t.category)}</span>
+              {t.recurringId && <span className="txn-tag">ประจำ</span>}
               {t.note && <span className="txn-note">{t.note}</span>}
               <span className="txn-date">{t.date.slice(8)}/{t.date.slice(5, 7)}</span>
             </div>
@@ -401,6 +448,77 @@ function Transactions({ txns, setTxns, viewMonth, setViewMonth, monthTxns }) {
         ))}
       </div>
     </>
+  );
+}
+
+/* ----------------------------- ตัวจัดการรายการประจำ ----------------------------- */
+
+function RecurringManager({ recurring, setRecurring, settings, setSettings }) {
+  const [type, setType] = useState("expense");
+  const [amount, setAmount] = useState("");
+  const [cat, setCat] = useState("home");
+  const [day, setDay] = useState(1);
+  const [note, setNote] = useState("");
+  const cats = type === "income" ? INCOME_CATS : EXPENSE_CATS;
+
+  const add = () => {
+    const amt = parseFloat(amount);
+    if (!amt || amt <= 0) return;
+    const validCat = cats.find((c) => c.id === cat) ? cat : cats[0].id;
+    const d = Math.min(31, Math.max(1, parseInt(day) || 1));
+    setRecurring([...recurring, { id: Date.now(), type, amount: amt, category: validCat, day: d, note }]);
+    setAmount(""); setNote("");
+  };
+  const del = (id) => setRecurring(recurring.filter((r) => r.id !== id));
+  const catLabel = (id) => [...INCOME_CATS, ...EXPENSE_CATS].find((c) => c.id === id)?.label || id;
+
+  return (
+    <div className="card">
+      <div className="card-title">รายการประจำ</div>
+      <p className="muted-note" style={{ margin: "0 0 12px" }}>
+        ตั้งรายการที่เกิดซ้ำทุกเดือน เช่น เงินเดือน ค่าเช่า ค่าน้ำค่าไฟ ระบบจะช่วยลงให้
+      </p>
+      <label className="rec-auto">
+        <input type="checkbox" checked={!!settings.autoRecurring} onChange={(e) => setSettings({ ...settings, autoRecurring: e.target.checked })} />
+        <span>ลงรายการประจำให้อัตโนมัติทุกเดือน</span>
+      </label>
+      <div className="type-toggle" style={{ marginTop: 14 }}>
+        <button className={type === "expense" ? "active exp" : ""} onClick={() => { setType("expense"); setCat("home"); }}>รายจ่าย</button>
+        <button className={type === "income" ? "active inc" : ""} onClick={() => { setType("income"); setCat("salary"); }}>รายรับ</button>
+      </div>
+      <div className="form-grid" style={{ marginTop: 10 }}>
+        <label>จำนวนเงิน
+          <input type="number" inputMode="decimal" value={amount} placeholder="0" onChange={(e) => setAmount(e.target.value)} />
+        </label>
+        <label>หมวดหมู่
+          <select value={cat} onChange={(e) => setCat(e.target.value)}>
+            {cats.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
+          </select>
+        </label>
+        <label>ลงทุกวันที่
+          <input type="number" min="1" max="31" value={day} onChange={(e) => setDay(e.target.value)} />
+        </label>
+        <label>บันทึก (ไม่บังคับ)
+          <input type="text" value={note} placeholder="เช่น ค่าเช่าห้อง" onChange={(e) => setNote(e.target.value)} />
+        </label>
+      </div>
+      <button className="btn-primary" onClick={add}>+ เพิ่มรายการประจำ</button>
+
+      {recurring.length > 0 && (
+        <div className="rec-list">
+          {recurring.map((r) => (
+            <div className="rec-item" key={r.id}>
+              <span className="rec-day">ว.{r.day}</span>
+              <span className="rec-cat">{catLabel(r.category)}{r.note ? ` · ${r.note}` : ""}</span>
+              <span className="rec-amt" style={{ color: r.type === "income" ? PALETTE.income : PALETTE.expense }}>
+                {r.type === "income" ? "+" : "−"}{fmt(r.amount).slice(1)}
+              </span>
+              <button className="txn-del" onClick={() => del(r.id)}>✕</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -831,6 +949,18 @@ const CSS = `
 .md-changekey{border:none;background:none;color:var(--brand);font-size:12px;cursor:pointer;text-decoration:underline;padding:0}
 .md-guide p{font-size:13.5px;margin:0 0 10px;line-height:1.6}
 .md-guide p:last-child{margin-bottom:0}
+
+.rec-auto{display:flex;align-items:center;gap:9px;font-size:13.5px;cursor:pointer}
+.rec-auto input{width:17px;height:17px;accent-color:var(--brand);cursor:pointer}
+.rec-list{margin-top:14px;border-top:1px solid var(--hair)}
+.rec-item{display:flex;align-items:center;gap:10px;padding:10px 2px;border-bottom:1px solid var(--hair);font-size:13.5px}
+.rec-item:last-child{border-bottom:none}
+.rec-day{color:var(--muted);font-size:12px;white-space:nowrap;background:#EBE8DF;padding:2px 7px;border-radius:6px}
+.rec-cat{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rec-amt{font-family:'Noto Serif Thai',serif;font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
+.rec-banner{display:flex;justify-content:space-between;align-items:center;gap:10px;background:#EEF2EC;border:1px solid #cfe0d3;border-radius:11px;padding:11px 13px;font-size:13px;color:var(--brand)}
+.rec-banner button{border:none;background:var(--brand);color:#fff;padding:8px 15px;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;white-space:nowrap}
+.txn-tag{font-size:10.5px;background:#E8EDE6;color:var(--brand);padding:1px 7px;border-radius:99px;font-weight:600}
 
 .ftr{margin-top:22px;padding-top:14px;border-top:1px solid var(--hair);font-size:11.5px;color:var(--muted);line-height:1.5;text-align:center}
 `;
