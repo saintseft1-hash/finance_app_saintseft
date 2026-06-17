@@ -273,7 +273,7 @@ export default function App() {
 
       <main className="main">
         {tab === "overview" && (
-          <Overview {...{ viewMonth, setViewMonth, income, expense, net, savingsRate, avgExpense, emergencyTarget }} />
+          <Overview {...{ viewMonth, setViewMonth, income, expense, net, savingsRate, avgExpense, emergencyTarget, monthTxns }} />
         )}
         {tab === "txns" && (
           <Transactions {...{ txns, setTxns, viewMonth, setViewMonth, monthTxns,
@@ -300,7 +300,46 @@ export default function App() {
 
 /* ----------------------------- แท็บ: ภาพรวม ----------------------------- */
 
-function Overview({ viewMonth, setViewMonth, income, expense, net, savingsRate, avgExpense, emergencyTarget }) {
+function Overview({ viewMonth, setViewMonth, income, expense, net, savingsRate, avgExpense, emergencyTarget, monthTxns }) {
+  const catLabel = (id) => [...INCOME_CATS, ...EXPENSE_CATS].find((c) => c.id === id)?.label || id;
+
+  // สรุปตามหมวด เรียงจากมากไปน้อย
+  const breakdown = (kind) => {
+    const map = {};
+    monthTxns.filter((t) => t.type === kind).forEach((t) => {
+      map[t.category] = (map[t.category] || 0) + t.amount;
+    });
+    const total = Object.values(map).reduce((a, b) => a + b, 0);
+    return {
+      total,
+      rows: Object.entries(map)
+        .map(([cat, amt]) => ({ cat, amt, pct: total > 0 ? (amt / total) * 100 : 0 }))
+        .sort((a, b) => b.amt - a.amt),
+    };
+  };
+
+  const exp = breakdown("expense");
+  const inc = breakdown("income");
+
+  const BreakdownCard = ({ title, data, color }) => (
+    <div className="card">
+      <div className="card-title">{title}</div>
+      {data.rows.length === 0 ? (
+        <div className="bd-empty">ยังไม่มีรายการในเดือนนี้</div>
+      ) : (
+        data.rows.map((r) => (
+          <div className="bd-row" key={r.cat}>
+            <div className="bd-head">
+              <span className="bd-cat">{catLabel(r.cat)}</span>
+              <span className="bd-amt">{fmt(r.amt)} <span className="bd-pct">{r.pct.toFixed(0)}%</span></span>
+            </div>
+            <Bar pct={r.pct} color={color} />
+          </div>
+        ))
+      )}
+    </div>
+  );
+
   return (
     <>
       <MonthNav viewMonth={viewMonth} setViewMonth={setViewMonth} />
@@ -327,6 +366,11 @@ function Overview({ viewMonth, setViewMonth, income, expense, net, savingsRate, 
             ? "เป้าหมายที่ดีคือออมให้ได้ 20% ขึ้นไป ลองตัดรายจ่ายหมวด ‘อยากได้’"
             : "เดือนนี้จ่ายเกินรับ ลองดูหมวดที่จ่ายเยอะที่สุดในแท็บรายการ"}
         </div>
+      </div>
+
+      <div className="grid2">
+        <BreakdownCard title="รายจ่ายเดือนนี้ไปกับอะไรบ้าง" data={exp} color={PALETTE.expense} />
+        <BreakdownCard title="รายรับเดือนนี้มาจากไหนบ้าง" data={inc} color={PALETTE.income} />
       </div>
 
       <div className="grid2">
@@ -961,6 +1005,14 @@ const CSS = `
 .rec-banner{display:flex;justify-content:space-between;align-items:center;gap:10px;background:#EEF2EC;border:1px solid #cfe0d3;border-radius:11px;padding:11px 13px;font-size:13px;color:var(--brand)}
 .rec-banner button{border:none;background:var(--brand);color:#fff;padding:8px 15px;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;white-space:nowrap}
 .txn-tag{font-size:10.5px;background:#E8EDE6;color:var(--brand);padding:1px 7px;border-radius:99px;font-weight:600}
+
+.bd-empty{font-size:13px;color:var(--muted);padding:6px 0}
+.bd-row{margin-bottom:12px}
+.bd-row:last-child{margin-bottom:0}
+.bd-head{display:flex;justify-content:space-between;align-items:baseline;font-size:13.5px;margin-bottom:1px}
+.bd-cat{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bd-amt{font-variant-numeric:tabular-nums;white-space:nowrap;font-weight:500}
+.bd-pct{color:var(--muted);font-weight:400;font-size:12px;margin-left:4px}
 
 .ftr{margin-top:22px;padding-top:14px;border-top:1px solid var(--hair);font-size:11.5px;color:var(--muted);line-height:1.5;text-align:center}
 `;
