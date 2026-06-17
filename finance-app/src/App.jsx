@@ -3,6 +3,27 @@ import {
   AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
 } from "recharts";
 
+/* ----------------------------- เรียก API ----------------------------- */
+
+async function api(path, { method = "GET", token, body } = {}) {
+  const res = await fetch(path, {
+    method,
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: "Bearer " + token } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  let data = {};
+  try { data = await res.json(); } catch (e) {}
+  if (!res.ok) {
+    const err = new Error(data.error || "เกิดข้อผิดพลาด");
+    err.status = res.status;
+    throw err;
+  }
+  return data;
+}
+
 /* ----------------------------- ค่าคงที่/ตั้งค่า ----------------------------- */
 
 const PALETTE = {
@@ -142,17 +163,135 @@ function Bar({ pct, color }) {
 /* ----------------------------- แอปหลัก ----------------------------- */
 
 export default function App() {
-  const [tab, setTab] = useState("overview");
-  const [settings, setSettings] = useState(() =>
-    load("finance:settings", { monthlyIncome: 18000, riskTolerance: 20, investOverride: null, finnhubKey: "" })
+  const [auth, setAuth] = useState(() => {
+    try {
+      const token = localStorage.getItem("finance:token");
+      const email = localStorage.getItem("finance:email");
+      return token ? { token, email } : null;
+    } catch (e) {
+      return null;
+    }
+  });
+
+  const login = (token, email) => {
+    try {
+      localStorage.setItem("finance:token", token);
+      localStorage.setItem("finance:email", email);
+    } catch (e) {}
+    setAuth({ token, email });
+  };
+  const logout = () => {
+    try {
+      localStorage.removeItem("finance:token");
+      localStorage.removeItem("finance:email");
+    } catch (e) {}
+    setAuth(null);
+  };
+
+  if (!auth) return <AuthScreen onLogin={login} />;
+  return <FinanceApp token={auth.token} email={auth.email} onLogout={logout} />;
+}
+
+/* ----------------------------- หน้าเข้าสู่ระบบ ----------------------------- */
+
+function AuthScreen({ onLogin }) {
+  const [mode, setMode] = useState("login");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    setErr("");
+    if (!email || !password) { setErr("กรอกอีเมลและรหัสผ่าน"); return; }
+    if (mode === "register" && password.length < 6) { setErr("รหัสผ่านอย่างน้อย 6 ตัวอักษร"); return; }
+    setBusy(true);
+    try {
+      const data = await api("/api/" + mode, {
+        method: "POST",
+        body: { email: email.trim().toLowerCase(), password },
+      });
+      onLogin(data.token, data.email);
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="root auth-root">
+      <style>{CSS}</style>
+      <div className="auth-card">
+        <div className="brand-mark">เงินงอกเงย</div>
+        <div className="brand-sub">บัญชีส่วนตัว · ออม · ลงทุน</div>
+        <div className="auth-tabs">
+          <button className={mode === "login" ? "active" : ""} onClick={() => { setMode("login"); setErr(""); }}>เข้าสู่ระบบ</button>
+          <button className={mode === "register" ? "active" : ""} onClick={() => { setMode("register"); setErr(""); }}>สมัครสมาชิก</button>
+        </div>
+        <label className="auth-field">อีเมล
+          <input type="email" value={email} placeholder="you@email.com" onChange={(e) => setEmail(e.target.value)} />
+        </label>
+        <label className="auth-field">รหัสผ่าน
+          <input type="password" value={password} placeholder="••••••" onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} />
+        </label>
+        {err && <div className="auth-err">{err}</div>}
+        <button className="btn-primary" onClick={submit} disabled={busy}>
+          {busy ? "กำลังดำเนินการ…" : mode === "login" ? "เข้าสู่ระบบ" : "สมัครและเริ่มใช้งาน"}
+        </button>
+        <div className="auth-note">
+          แต่ละคนในครอบครัวสมัครบัญชีของตัวเอง ข้อมูลจะแยกกันและเข้าได้จากทุกอุปกรณ์
+        </div>
+      </div>
+    </div>
   );
-  const [txns, setTxns] = useState(() => load("finance:txns", []));
-  const [recurring, setRecurring] = useState(() => load("finance:recurring", []));
+}
+
+/* ----------------------------- แอปหลัก ----------------------------- */
+
+function FinanceApp({ token, email, onLogout }) {
+  const [tab, setTab] = useState("overview");
+  const [loaded, setLoaded] = useState(false);
+  const [saveState, setSaveState] = useState("saved");
+  const [settings, setSettings] = useState({ monthlyIncome: 18000, riskTolerance: 20, investOverride: null, finnhubKey: "", autoRecurring: false });
+  const [txns, setTxns] = useState([]);
+  const [recurring, setRecurring] = useState([]);
   const [viewMonth, setViewMonth] = useState(monthKey(todayStr()));
 
-  useEffect(() => { save("finance:settings", settings); }, [settings]);
-  useEffect(() => { save("finance:txns", txns); }, [txns]);
-  useEffect(() => { save("finance:recurring", recurring); }, [recurring]);
+  // โหลดข้อมูลจากเซิร์ฟเวอร์เมื่อเข้าสู่ระบบ
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await api("/api/data", { token });
+        const d = res.data || {};
+        if (d.settings) setSettings((s) => ({ ...s, ...d.settings }));
+        if (Array.isArray(d.txns)) setTxns(d.txns);
+        if (Array.isArray(d.recurring)) setRecurring(d.recurring);
+      } catch (e) {
+        if (e.status === 401) { onLogout(); return; }
+      } finally {
+        setLoaded(true);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // บันทึกขึ้นเซิร์ฟเวอร์ (หน่วงเวลาเล็กน้อยเพื่อรวมการเปลี่ยนแปลง)
+  useEffect(() => {
+    if (!loaded) return;
+    setSaveState("saving");
+    const id = setTimeout(async () => {
+      try {
+        await api("/api/data", { method: "PUT", token, body: { data: { settings, txns, recurring } } });
+        setSaveState("saved");
+      } catch (e) {
+        setSaveState("error");
+        if (e.status === 401) onLogout();
+      }
+    }, 700);
+    return () => clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings, txns, recurring, loaded]);
 
   const monthsWithData = useMemo(() => {
     const set = new Set(txns.map((t) => monthKey(t.date)));
@@ -240,9 +379,28 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings.autoRecurring, recurring]);
 
+  if (!loaded) {
+    return (
+      <div className="root">
+        <style>{CSS}</style>
+        <div className="loading-screen">กำลังโหลดข้อมูลของคุณ…</div>
+      </div>
+    );
+  }
+
   return (
     <div className="root">
       <style>{CSS}</style>
+
+      <div className="userbar">
+        <span className="userbar-email">{email}</span>
+        <span className="userbar-right">
+          <span className={"savedot " + saveState}>
+            {saveState === "saving" ? "กำลังบันทึก…" : saveState === "error" ? "บันทึกไม่สำเร็จ" : "บันทึกแล้ว"}
+          </span>
+          <button className="logout-btn" onClick={onLogout}>ออกจากระบบ</button>
+        </span>
+      </div>
 
       <header className="hdr">
         <div>
@@ -865,6 +1023,33 @@ const CSS = `
 }
 .root *{box-sizing:border-box}
 .root input,.root select,.root button{font-family:inherit}
+
+.loading-screen{display:flex;align-items:center;justify-content:center;min-height:60vh;color:var(--muted);font-size:15px}
+
+.userbar{display:flex;justify-content:space-between;align-items:center;font-size:12.5px;color:var(--muted);margin-bottom:10px}
+.userbar-email{font-weight:500}
+.userbar-right{display:flex;align-items:center;gap:12px}
+.savedot{display:inline-flex;align-items:center;gap:5px}
+.savedot::before{content:"";width:7px;height:7px;border-radius:99px;background:var(--income)}
+.savedot.saving::before{background:var(--brass)}
+.savedot.error{color:var(--expense)}
+.savedot.error::before{background:var(--expense)}
+.logout-btn{border:1px solid var(--hair);background:var(--card);color:var(--brand);font-size:12px;padding:5px 11px;border-radius:8px;cursor:pointer}
+.logout-btn:hover{background:var(--paper)}
+
+.auth-root{display:flex;align-items:center;justify-content:center;min-height:100vh}
+.auth-card{background:var(--card);border:1px solid var(--hair);border-radius:16px;padding:30px 24px;width:100%;max-width:380px;box-shadow:0 4px 24px rgba(20,63,58,.06)}
+.auth-card .brand-mark{font-family:'Noto Serif Thai',serif;font-weight:700;font-size:28px;color:var(--brand);text-align:center}
+.auth-card .brand-sub{font-size:12.5px;color:var(--muted);text-align:center;margin-bottom:22px}
+.auth-tabs{display:flex;gap:4px;background:#EBE8DF;padding:4px;border-radius:11px;margin-bottom:20px}
+.auth-tabs button{flex:1;border:none;background:none;padding:9px;border-radius:8px;font-size:14px;font-weight:500;color:var(--muted);cursor:pointer}
+.auth-tabs button.active{background:var(--card);color:var(--brand);font-weight:600;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+.auth-field{display:flex;flex-direction:column;font-size:12.5px;color:var(--muted);gap:5px;margin-bottom:14px}
+.auth-field input{padding:11px;border:1px solid var(--hair);border-radius:9px;font-size:15px;background:#fff;color:var(--ink)}
+.auth-field input:focus{outline:none;border-color:var(--brand)}
+.auth-err{background:#FBF1EE;color:#7a3f31;font-size:13px;padding:9px 12px;border-radius:8px;margin-bottom:14px}
+.auth-card .btn-primary{margin-top:4px}
+.auth-note{font-size:12px;color:var(--muted);text-align:center;margin-top:16px;line-height:1.5}
 
 .hdr{display:flex;justify-content:space-between;align-items:flex-end;padding-bottom:14px;border-bottom:1px solid var(--hair)}
 .brand-mark{font-family:'Noto Serif Thai',serif;font-weight:700;font-size:26px;color:var(--brand);letter-spacing:-.5px}

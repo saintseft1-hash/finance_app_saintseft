@@ -1,5 +1,7 @@
-# Railway (Nixpacks) จะ build แล้ว start ให้อัตโนมัติจาก package.json
-# ไฟล์นี้ช่วยล็อกขั้นตอนให้ชัดเจน
+# Railway (Nixpacks): ติดตั้ง → build → start
+[phases.install]
+cmds = ["npm install"]
+
 [phases.build]
 cmds = ["npm run build"]
 
