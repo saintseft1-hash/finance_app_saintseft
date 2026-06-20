@@ -465,7 +465,7 @@ function FinanceApp({ token, email, onLogout, theme, onToggleTheme }) {
 
       <main className="main">
         {tab === "overview" && (
-          <Overview {...{ viewMonth, setViewMonth, income, expense, net, savingsRate, avgExpense, emergencyTarget, monthTxns }} />
+          <Overview {...{ viewMonth, setViewMonth, income, expense, net, savingsRate, avgExpense, emergencyTarget, monthTxns, txns }} />
         )}
         {tab === "txns" && (
           <Transactions {...{ txns, setTxns, viewMonth, setViewMonth, monthTxns,
@@ -492,8 +492,41 @@ function FinanceApp({ token, email, onLogout, theme, onToggleTheme }) {
 
 /* ----------------------------- แท็บ: ภาพรวม ----------------------------- */
 
-function Overview({ viewMonth, setViewMonth, income, expense, net, savingsRate, avgExpense, emergencyTarget, monthTxns }) {
+function Overview({ viewMonth, setViewMonth, income, expense, net, savingsRate, avgExpense, emergencyTarget, monthTxns, txns }) {
   const catLabel = (id) => [...INCOME_CATS, ...EXPENSE_CATS].find((c) => c.id === id)?.label || id;
+
+  // ความมั่งคั่งสะสมรายเดือน (เงินสะสมสุทธิ = รายรับสะสม − รายจ่ายสะสม)
+  const wealth = useMemo(() => {
+    if (!txns || !txns.length) return [];
+    const byMonth = {};
+    txns.forEach((t) => {
+      const k = monthKey(t.date);
+      byMonth[k] = (byMonth[k] || 0) + (t.type === "income" ? t.amount : -t.amount);
+    });
+    const keys = Object.keys(byMonth).sort();
+    const first = keys[0];
+    const lastKey = keys[keys.length - 1];
+    const nowKey = monthKey(todayStr());
+    const last = lastKey > nowKey ? lastKey : nowKey;
+    const out = [];
+    let cum = 0;
+    let [y, m] = first.split("-").map(Number);
+    let guard = 0;
+    while (guard++ < 600) {
+      const k = `${y}-${String(m).padStart(2, "0")}`;
+      cum += byMonth[k] || 0;
+      out.push({ month: k, value: Math.round(cum) });
+      if (k === last) break;
+      m++; if (m > 12) { m = 1; y++; }
+    }
+    return out.slice(-12); // 12 เดือนล่าสุด
+  }, [txns]);
+
+  const wealthShort = (k) => {
+    const names = ["ม.ค.","ก.พ.","มี.ค.","เม.ย.","พ.ค.","มิ.ย.","ก.ค.","ส.ค.","ก.ย.","ต.ค.","พ.ย.","ธ.ค."];
+    const [, m] = k.split("-");
+    return names[+m - 1];
+  };
 
   // สรุปตามหมวด เรียงจากมากไปน้อย
   const breakdown = (kind) => {
@@ -560,6 +593,38 @@ function Overview({ viewMonth, setViewMonth, income, expense, net, savingsRate, 
         </div>
       </div>
 
+      <div className="card">
+        <div className="card-title">ความมั่งคั่งเติบโต (เงินสะสมสุทธิ)</div>
+        {wealth.length < 2 ? (
+          <div className="bd-empty">ต้องมีข้อมูลอย่างน้อย 2 เดือนถึงจะเห็นแนวโน้ม บันทึกต่อไปเรื่อย ๆ แล้วเส้นจะค่อย ๆ โผล่มาครับ</div>
+        ) : (
+          <>
+            <div className="chart-wrap">
+              <ResponsiveContainer width="100%" height={190}>
+                <AreaChart data={wealth} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="gw" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor={PALETTE.brand} stopOpacity={0.35} />
+                      <stop offset="100%" stopColor={PALETTE.brand} stopOpacity={0.02} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid stroke={PALETTE.hair} vertical={false} />
+                  <XAxis dataKey="month" tick={{ fontSize: 11, fill: PALETTE.muted }} tickFormatter={wealthShort} />
+                  <YAxis tick={{ fontSize: 11, fill: PALETTE.muted }} tickFormatter={fmtK} width={48} />
+                  <Tooltip
+                    formatter={(v) => [fmt(v), "เงินสะสมสุทธิ"]}
+                    labelFormatter={(k) => monthLabel(k)}
+                    contentStyle={{ fontSize: 12, borderRadius: 8, border: `1px solid ${PALETTE.hair}`, background: PALETTE.card, color: PALETTE.ink }}
+                  />
+                  <Area type="monotone" dataKey="value" stroke={PALETTE.brand} strokeWidth={2} fill="url(#gw)" />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+            <div className="muted-note">รวมจากรายรับ-รายจ่ายที่บันทึกไว้ทั้งหมด ยิ่งบันทึกสม่ำเสมอ เส้นยิ่งสะท้อนความเป็นจริง</div>
+          </>
+        )}
+      </div>
+
       <div className="grid2">
         <BreakdownCard title="รายจ่ายเดือนนี้ไปกับอะไรบ้าง" data={exp} color={PALETTE.expense} />
         <BreakdownCard title="รายรับเดือนนี้มาจากไหนบ้าง" data={inc} color={PALETTE.income} />
@@ -612,17 +677,34 @@ function Transactions({ txns, setTxns, viewMonth, setViewMonth, monthTxns, recur
   const [cat, setCat] = useState("food");
   const [date, setDate] = useState(todayStr());
   const [note, setNote] = useState("");
+  const [editId, setEditId] = useState(null);
 
   const cats = type === "income" ? INCOME_CATS : EXPENSE_CATS;
 
-  const add = () => {
+  const reset = () => { setEditId(null); setAmount(""); setNote(""); setType("expense"); setCat("food"); setDate(todayStr()); };
+
+  const save = () => {
     const amt = parseFloat(amount);
     if (!amt || amt <= 0) return;
     const validCat = cats.find((c) => c.id === cat) ? cat : cats[0].id;
-    setTxns([{ id: Date.now(), type, amount: amt, category: validCat, date, note }, ...txns]);
-    setAmount(""); setNote("");
+    if (editId) {
+      setTxns(txns.map((t) => (t.id === editId ? { ...t, type, amount: amt, category: validCat, date, note } : t)));
+    } else {
+      setTxns([{ id: Date.now(), type, amount: amt, category: validCat, date, note }, ...txns]);
+    }
+    reset();
   };
-  const del = (id) => setTxns(txns.filter((t) => t.id !== id));
+
+  const startEdit = (t) => {
+    setEditId(t.id);
+    setType(t.type);
+    setAmount(String(t.amount));
+    setCat(t.category);
+    setDate(t.date);
+    setNote(t.note || "");
+    if (typeof window !== "undefined") window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+  const del = (id) => { if (editId === id) reset(); setTxns(txns.filter((t) => t.id !== id)); };
 
   const catLabel = (id) =>
     [...INCOME_CATS, ...EXPENSE_CATS].find((c) => c.id === id)?.label || id;
@@ -632,6 +714,7 @@ function Transactions({ txns, setTxns, viewMonth, setViewMonth, monthTxns, recur
   return (
     <>
       <div className="card form-card">
+        {editId && <div className="edit-banner">กำลังแก้ไขรายการ <button onClick={reset}>ยกเลิก</button></div>}
         <div className="type-toggle">
           <button className={type === "expense" ? "active exp" : ""} onClick={() => { setType("expense"); setCat("food"); }}>รายจ่าย</button>
           <button className={type === "income" ? "active inc" : ""} onClick={() => { setType("income"); setCat("salary"); }}>รายรับ</button>
@@ -652,7 +735,7 @@ function Transactions({ txns, setTxns, viewMonth, setViewMonth, monthTxns, recur
             <input type="text" value={note} placeholder="รายละเอียด" onChange={(e) => setNote(e.target.value)} />
           </label>
         </div>
-        <button className="btn-primary" onClick={add}>+ เพิ่มรายการ</button>
+        <button className="btn-primary" onClick={save}>{editId ? "บันทึกการแก้ไข" : "+ เพิ่มรายการ"}</button>
       </div>
 
       <RecurringManager {...{ recurring, setRecurring, settings, setSettings }} />
@@ -669,7 +752,7 @@ function Transactions({ txns, setTxns, viewMonth, setViewMonth, monthTxns, recur
       <div className="card list-card">
         {sorted.length === 0 && <div className="empty">ยังไม่มีรายการในเดือนนี้ เพิ่มรายการแรกด้านบนได้เลย</div>}
         {sorted.map((t) => (
-          <div className="txn" key={t.id}>
+          <div className={"txn" + (editId === t.id ? " editing" : "")} key={t.id}>
             <div className="txn-main">
               <span className="txn-cat">{catLabel(t.category)}</span>
               {t.recurringId && <span className="txn-tag">ประจำ</span>}
@@ -679,7 +762,8 @@ function Transactions({ txns, setTxns, viewMonth, setViewMonth, monthTxns, recur
             <div className="txn-amt" style={{ color: t.type === "income" ? PALETTE.income : PALETTE.expense }}>
               {t.type === "income" ? "+" : "−"}{fmt(t.amount).slice(1)}
             </div>
-            <button className="txn-del" onClick={() => del(t.id)}>✕</button>
+            <button className="txn-edit" onClick={() => startEdit(t)} title="แก้ไข">✎</button>
+            <button className="txn-del" onClick={() => del(t.id)} title="ลบ">✕</button>
           </div>
         ))}
       </div>
@@ -828,8 +912,53 @@ function Invest({ settings, setSettings, w, expRet, portRisk, recommendedInvest,
   const overTarget = portRisk > 20;
   const sortedAssets = Object.keys(w).sort((a, b) => w[b] - w[a]);
 
+  const efCurrent = settings.emergencyCurrent || 0;
+  const efPct = emergencyTarget > 0 ? (efCurrent / emergencyTarget) * 100 : 0;
+  const efDone = efCurrent >= emergencyTarget && emergencyTarget > 0;
+
+  const debts = settings.debts || [];
+  const totalDebt = debts.reduce((a, d) => a + (d.balance || 0), 0);
+  const hiRate = debts.some((d) => (d.rate || 0) >= 12);
+
   return (
     <>
+      <div className="card">
+        <div className="card-title">กองทุนฉุกเฉิน</div>
+        <p className="muted-note" style={{ margin: "0 0 12px" }}>
+          ด่านแรกก่อนลงทุน ควรมีเงินสำรอง 6 เท่าของรายจ่าย ≈ {fmt(emergencyTarget)} เผื่อเหตุไม่คาดฝัน
+        </p>
+        <div className="invest-amt">
+          <span>ตอนนี้มีสำรองแล้ว</span>
+          <div className="income-edit small">
+            <span>฿</span>
+            <input type="number" value={efCurrent}
+              onChange={(e) => setSettings({ ...settings, emergencyCurrent: parseFloat(e.target.value) || 0 })} />
+          </div>
+        </div>
+        <Bar pct={Math.min(100, efPct)} color={efDone ? PALETTE.income : PALETTE.brand} />
+        <div className="muted-note">
+          {efDone
+            ? "ครบแล้ว เยี่ยมมาก พร้อมลุยลงทุนเต็มที่ได้เลย"
+            : `${efPct.toFixed(0)}% ของเป้า — เหลืออีก ${fmt(Math.max(0, emergencyTarget - efCurrent))}`}
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-title">ติดตามหนี้สิน</div>
+        <DebtManager settings={settings} setSettings={setSettings} />
+        {debts.length > 0 && (
+          <div className={"debt-total" + (hiRate ? " warn" : "")}>
+            <span>หนี้รวมทั้งหมด</span>
+            <b>{fmt(totalDebt)}</b>
+          </div>
+        )}
+        {hiRate && (
+          <div className="muted-note" style={{ color: PALETTE.expense }}>
+            มีหนี้ดอกเบี้ยสูง (≥12%) — ปิดหนี้นี้ก่อนให้ผลตอบแทนชัวร์กว่าการลงทุนเกือบทุกแบบ
+          </div>
+        )}
+      </div>
+
       <div className="card">
         <div className="card-title">ระดับความเสี่ยงที่รับได้</div>
         <div className="risk-row">
@@ -919,11 +1048,110 @@ function Invest({ settings, setSettings, w, expRet, portRisk, recommendedInvest,
         </div>
       </div>
 
-      <div className="card warn-card">
-        <b>ก่อนเริ่มลงทุน</b> ควรมีกองทุนฉุกเฉิน ≈ {fmt(emergencyTarget)} (6 เท่าของรายจ่าย ≈ {fmt(avgExpense)}/เดือน)
-        และปลดหนี้ดอกเบี้ยสูงก่อน เพื่อให้การลงทุนเดินหน้าได้โดยไม่ต้องถอนกลางทาง
-      </div>
+      <SsfHelper settings={settings} setSettings={setSettings} />
     </>
+  );
+}
+
+/* ----------------------------- ตัวจัดการหนี้สิน ----------------------------- */
+
+function DebtManager({ settings, setSettings }) {
+  const debts = settings.debts || [];
+  const [name, setName] = useState("");
+  const [balance, setBalance] = useState("");
+  const [rate, setRate] = useState("");
+
+  const add = () => {
+    const bal = parseFloat(balance);
+    if (!name.trim() || !bal || bal <= 0) return;
+    const next = [...debts, { id: Date.now(), name: name.trim(), balance: bal, rate: parseFloat(rate) || 0 }];
+    setSettings({ ...settings, debts: next });
+    setName(""); setBalance(""); setRate("");
+  };
+  const del = (id) => setSettings({ ...settings, debts: debts.filter((d) => d.id !== id) });
+
+  // เรียงดอกเบี้ยสูงสุดก่อน (แนะนำให้ปิดตัวนี้ก่อน)
+  const sorted = [...debts].sort((a, b) => (b.rate || 0) - (a.rate || 0));
+
+  return (
+    <>
+      <div className="form-grid debt-form">
+        <label>ชื่อหนี้
+          <input type="text" value={name} placeholder="เช่น บัตรเครดิต" onChange={(e) => setName(e.target.value)} />
+        </label>
+        <label>ยอดคงเหลือ
+          <input type="number" value={balance} placeholder="0" onChange={(e) => setBalance(e.target.value)} />
+        </label>
+        <label>ดอกเบี้ย/ปี (%)
+          <input type="number" value={rate} placeholder="เช่น 16" onChange={(e) => setRate(e.target.value)} />
+        </label>
+      </div>
+      <button className="btn-primary" onClick={add}>+ เพิ่มหนี้</button>
+
+      {sorted.length > 0 && (
+        <div className="rec-list">
+          {sorted.map((d) => (
+            <div className="rec-item" key={d.id}>
+              <span className="rec-day" style={(d.rate || 0) >= 12 ? { background: "transparent", color: PALETTE.expense, fontWeight: 600 } : {}}>{(d.rate || 0)}%</span>
+              <span className="rec-cat">{d.name}</span>
+              <span className="rec-amt" style={{ color: PALETTE.expense }}>{fmt(d.balance)}</span>
+              <button className="txn-del" onClick={() => del(d.id)}>✕</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+/* ----------------------------- ตัวช่วยภาษี SSF/RMF ----------------------------- */
+
+const TAX_BRACKETS = [5, 10, 15, 20, 25, 30, 35];
+
+function SsfHelper({ settings, setSettings }) {
+  const annualIncome = (settings.monthlyIncome || 0) * 12;
+  const taxRate = settings.taxRate ?? 10;
+  const contribution = settings.ssfPlan ?? 0;
+  const taxSaved = contribution * (taxRate / 100);
+  // เพดานคร่าว ๆ ไม่เกิน 30% ของรายได้ (โปรดตรวจสอบเพดานปีปัจจุบันอีกครั้ง)
+  const roughCap = Math.round(annualIncome * 0.3);
+  const overCap = contribution > roughCap && roughCap > 0;
+
+  return (
+    <div className="card">
+      <div className="card-title">ตัวช่วยลดหย่อนภาษี SSF / RMF</div>
+      <p className="muted-note" style={{ margin: "0 0 14px" }}>
+        ลงทุนในกองทุน SSF/RMF นำมาลดหย่อนภาษีได้ = ประหยัดภาษีจริงทันที ลองคำนวณดูครับ
+      </p>
+
+      <div className="ssf-grid">
+        <label>ฐานภาษีสูงสุดของคุณ
+          <select value={taxRate} onChange={(e) => setSettings({ ...settings, taxRate: parseInt(e.target.value) })}>
+            {TAX_BRACKETS.map((r) => <option key={r} value={r}>{r}%</option>)}
+          </select>
+        </label>
+        <label>วางแผนลงทุน SSF/RMF ต่อปี
+          <input type="number" value={contribution} placeholder="0"
+            onChange={(e) => setSettings({ ...settings, ssfPlan: parseFloat(e.target.value) || 0 })} />
+        </label>
+      </div>
+
+      <div className="ssf-result">
+        <Stat label="ประหยัดภาษีได้ประมาณ" value={fmt(taxSaved) + "/ปี"} color={PALETTE.income} />
+        <Stat label="คิดเป็นต่อเดือน" value={fmt(taxSaved / 12)} />
+      </div>
+
+      {overCap && (
+        <div className="muted-note" style={{ color: PALETTE.expense }}>
+          ยอดที่ใส่เกิน 30% ของรายได้ (≈ {fmt(roughCap)}) ซึ่งมักเป็นเพดานลดหย่อน ลองตรวจสอบเพดานจริงอีกครั้ง
+        </div>
+      )}
+
+      <div className="muted-note">
+        เป็นการประมาณการเพื่อวางแผนเท่านั้น เพดานลดหย่อน SSF/RMF และฐานภาษีจริงเปลี่ยนได้ตามปีและเงื่อนไขส่วนบุคคล
+        โปรดตรวจสอบกับกรมสรรพากรหรือที่ปรึกษาภาษีก่อนตัดสินใจ
+      </div>
+    </div>
   );
 }
 
@@ -1235,6 +1463,20 @@ const CSS = `
 
 .ftr{margin-top:22px;padding-top:14px;border-top:1px solid var(--hair);font-size:11.5px;color:var(--muted);line-height:1.5;text-align:center}
 
+.txn-edit{border:none;background:none;color:var(--muted);cursor:pointer;font-size:14px;padding:4px}
+.txn-edit:hover{color:var(--brand)}
+.txn.editing{background:rgba(176,136,56,.08);border-radius:8px}
+.edit-banner{display:flex;justify-content:space-between;align-items:center;background:#F3EEE2;color:#6b5a2d;font-size:13px;padding:8px 12px;border-radius:9px;margin-bottom:12px}
+.edit-banner button{border:none;background:none;color:var(--brand);text-decoration:underline;font-size:13px;cursor:pointer}
+.debt-form{margin-bottom:0}
+.debt-total{display:flex;justify-content:space-between;align-items:center;margin-top:14px;padding-top:12px;border-top:1px solid var(--hair);font-size:14px}
+.debt-total b{font-family:'Noto Serif Thai',serif;font-size:18px;color:var(--expense)}
+.debt-total.warn b{color:var(--expense)}
+.ssf-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px}
+.ssf-grid label{display:flex;flex-direction:column;font-size:12px;color:var(--muted);gap:4px}
+.ssf-grid input,.ssf-grid select{padding:9px;border:1px solid var(--hair);border-radius:9px;font-size:15px;background:#fff;color:var(--ink)}
+.ssf-result{display:flex;gap:24px;margin-bottom:12px}
+
 .theme-btn{border:1px solid var(--hair);background:var(--card);color:var(--brand);font-size:12px;padding:5px 11px;border-radius:8px;cursor:pointer}
 .theme-btn:hover{background:var(--paper)}
 .theme-btn-float{position:fixed;top:16px;right:16px;z-index:5}
@@ -1257,6 +1499,8 @@ const CSS = `
 .root.dark .warn-card{background:#2A1E1A;border-color:#4A332B;color:#E0A493}
 .root.dark .passive{background:#2A2618;color:#D8C28A}
 .root.dark .rec-banner{background:#18271F;border-color:#2E4537}
+.root.dark .ssf-grid input,.root.dark .ssf-grid select{background:#14170F;color:var(--ink)}
+.root.dark .edit-banner{background:#2A2618;color:#D8C28A}
 .root.dark .rec-day{background:#2A2E26}
 .root.dark .txn-tag{background:#24322A;color:var(--income)}
 .root.dark .auth-card{box-shadow:0 4px 24px rgba(0,0,0,.4)}
